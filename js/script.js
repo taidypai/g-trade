@@ -8,6 +8,8 @@ const cryptoPanel = document.getElementById('cryptoPanel');
 const cryptoSymbolInput = document.getElementById('cryptoSymbol');
 const cryptoBalanceInput = document.getElementById('cryptoBalance');
 const cryptoStopLossInput = document.getElementById('cryptoStopLoss');
+const leverageSlider = document.getElementById('leverageSlider');
+const leverageValueSpan = document.getElementById('leverageValue');
 const livePriceSpan = document.getElementById('livePriceDisplay');
 const refreshPriceBtn = document.getElementById('refreshPriceBtn');
 const cryptoCalcBtn = document.getElementById('cryptoCalcBtn');
@@ -15,6 +17,19 @@ const cryptoResultBox = document.getElementById('cryptoResultBox');
 
 // Переменная для хранения текущей цены
 let currentCryptoPrice = null;
+let currentLeverage = 1;
+
+// ---- ОБНОВЛЕНИЕ ОТОБРАЖЕНИЯ ПЛЕЧА ----
+function updateLeverageDisplay() {
+    currentLeverage = parseInt(leverageSlider.value, 10);
+    leverageValueSpan.textContent = `${currentLeverage}x`;
+    // Если цена уже загружена, пересчитываем результат (опционально)
+    if (currentCryptoPrice !== null) {
+        calculateCryptoPosition();
+    }
+}
+
+leverageSlider.addEventListener('input', updateLeverageDisplay);
 
 // ---- ПЕРЕКЛЮЧЕНИЕ ПАНЕЛЕЙ (FOREX / CRYPTO) ----
 function setActiveMode(mode) {
@@ -37,10 +52,8 @@ cryptoBtn.addEventListener('click', () => setActiveMode('crypto'));
 // ---------- Функция получения цены с Binance (USDT пары) ----------
 async function fetchCryptoPrice(symbol) {
     if (!symbol) return null;
-    // Форматируем символ: убираем пробелы, переводим в верхний регистр, удостоверимся что заканчивается на USDT
     let cleanSymbol = symbol.trim().toUpperCase();
     if (!cleanSymbol.endsWith('USDT')) {
-        // Если пользователь ввел BTC, ETH и т.д. - добавим USDT для унификации
         cleanSymbol = cleanSymbol + 'USDT';
     }
     try {
@@ -70,9 +83,9 @@ async function updateLivePrice() {
     if (result && result.price) {
         currentCryptoPrice = result.price;
         livePriceSpan.textContent = `$ ${currentCryptoPrice.toFixed(2)}`;
-        // Если пользователь не ввел стоп-лосс, можно подсказать
-        if (cryptoStopLossInput.value === '') {
-            // Не трогаем, просто показываем цену
+        // Автоматически пересчитываем, если есть стоп-лосс
+        if (cryptoStopLossInput.value && !isNaN(parseFloat(cryptoStopLossInput.value))) {
+            calculateCryptoPosition();
         }
     } else {
         livePriceSpan.textContent = '⚠️ Ошибка пары';
@@ -94,18 +107,15 @@ cryptoSymbolInput.addEventListener('input', () => {
     }, 600);
 });
 
-// ---- ГЛАВНЫЙ РАСЧЁТ КРИПТЫ (риск 1% от депозита, плечи пока базовые)---
-// По ТЗ: "потеря от входа до стопа была не больше 1% от депозита"
-// Формула: RiskAmount = Balance * 0.01
-// Риск на единицу: |Entry - StopLoss|
-// Количество монет = RiskAmount / |Entry - StopLoss|
-// Примечание: если нужно с плечом: плечо увеличивает покупательную способность, но риск % считается от собственного капитала.
-// Без плеча quantity = RiskAmount / riskPerCoin.
-// Но в крипте часто используют USDT маржу — тогда quantity считаем так же.
-// Добавим возможность учитывать кредитное плечо? По умолчанию — без плеча, но можно расширить.
-// Сделаем чистую формулу с 1% риска: (Баланс × 0.01) / (Цена входа − СтопЛосс)
-// Входная цена = текущая рыночная (которую мы получили с Binance). Стоп лосс задаёт пользователь.
-// Если стоп-лосс выше цены (лонг), то разница положительная. Если шорт — по условию потери, но упростим: лонг.
+// ---- ГЛАВНЫЙ РАСЧЁТ КРИПТЫ С УЧЁТОМ ПЛЕЧА ----
+// Формула с плечом:
+// Риск в деньгах = Balance × 0.01 (1% от депозита)
+// При использовании плеча, позиция увеличивается, но риск остаётся тем же.
+// Правильный расчёт: Quantity = (RiskAmount × Leverage) / |Entry - StopLoss|
+// Потому что каждый доллар собственных средств контролирует Leverage долларов позиции.
+// Потеря на 1 монету = |Entry - StopLoss|, но при плече фактический убыток умножается, но мы хотим чтобы убыток в деньгах = RiskAmount.
+// => Quantity × |Entry - StopLoss| / Leverage = RiskAmount
+// => Quantity = RiskAmount × Leverage / |Entry - StopLoss|
 
 function calculateCryptoPosition() {
     // Проверяем, что есть текущая цена
@@ -119,63 +129,70 @@ function calculateCryptoPosition() {
     const balance = parseFloat(cryptoBalanceInput.value);
     const stopLoss = parseFloat(cryptoStopLossInput.value);
     const entryPrice = currentCryptoPrice;
+    const leverage = currentLeverage;
 
     if (isNaN(balance) || balance <= 0) {
         cryptoResultBox.textContent = '❌ Укажите корректный баланс > 0';
         cryptoResultBox.classList.add('result-error');
+        cryptoResultBox.classList.remove('result-success');
         return;
     }
     if (isNaN(stopLoss) || stopLoss <= 0) {
         cryptoResultBox.textContent = '❌ Введите цену стоп-лосса (число)';
         cryptoResultBox.classList.add('result-error');
+        cryptoResultBox.classList.remove('result-success');
         return;
     }
     if (stopLoss === entryPrice) {
         cryptoResultBox.textContent = '❌ StopLoss не может равняться Entry';
         cryptoResultBox.classList.add('result-error');
+        cryptoResultBox.classList.remove('result-success');
         return;
     }
 
     // Для LONG позиции: риск на монету = (Entry - StopLoss)
     let riskPerCoin = entryPrice - stopLoss;
     if (riskPerCoin <= 0) {
-        // Если стоп выше цены входа — возможен шорт? Но в классике для long риск должен быть положительным.
-        // Для шорта: riskPerCoin = stopLoss - entryPrice. Учитываем направление.
-        // Поскольку большинство трейдеров лонгуют, покажем понятную ошибку.
-        cryptoResultBox.textContent = '⚠️ Стоп-лосс должен быть ниже цены входа (для LONG)';
+        cryptoResultBox.textContent = '⚠️ Стоп-лосс должен быть НИЖЕ цены входа (для LONG)';
         cryptoResultBox.classList.add('result-error');
+        cryptoResultBox.classList.remove('result-success');
         return;
     }
 
-    const riskAmount = balance * 0.01;   // 1% от депозита
-    const quantity = riskAmount / riskPerCoin;
+    const riskAmount = balance * 0.01;   // 1% от депозита в USDT
+
+    // КЛЮЧЕВАЯ ФОРМУЛА С УЧЁТОМ ПЛЕЧА
+    // Quantity = (RiskAmount × Leverage) / riskPerCoin
+    const quantity = (riskAmount * leverage) / riskPerCoin;
 
     if (quantity <= 0) {
         cryptoResultBox.textContent = '0';
         cryptoResultBox.classList.add('result-error');
+        cryptoResultBox.classList.remove('result-success');
         return;
     }
 
-    // Форматируем вывод: до 8 знаков для мелких монет
+    // Форматируем вывод
     const formattedQty = quantity.toFixed(8);
     const symbolDisplay = cryptoSymbolInput.value.trim().toUpperCase() || 'COIN';
+    const displaySymbol = symbolDisplay.endsWith('USDT') ? symbolDisplay.replace('USDT', '') : symbolDisplay;
 
-    cryptoResultBox.innerHTML = `${formattedQty} <span style="font-size:0.9rem;">${symbolDisplay}</span>`;
+    cryptoResultBox.innerHTML = `${formattedQty} <span style="font-size:0.9rem;">${displaySymbol}</span>`;
     cryptoResultBox.classList.add('result-success');
     cryptoResultBox.classList.remove('result-error');
 
-    // Доп. информация: стоимость позиции и сумма риска в $
+    // Доп. информация
     const positionValue = quantity * entryPrice;
-    const riskUsd = riskPerCoin * quantity;
-    cryptoResultBox.title = `Размер позиции: ~$${positionValue.toFixed(2)} | Риск: $${riskUsd.toFixed(2)} (1%)`;
+    const marginUsed = positionValue / leverage;
+    const riskUsd = riskPerCoin * quantity / leverage;
+
+    cryptoResultBox.title = `Размер позиции: $${positionValue.toFixed(2)} | Залог: $${marginUsed.toFixed(2)} | Риск: $${riskUsd.toFixed(2)} (1%) | Плечо: ${leverage}x`;
 }
 
 // Обработчик кнопки расчёта крипты
 cryptoCalcBtn.addEventListener('click', () => {
     if (currentCryptoPrice === null) {
-        // Попробуем сначала загрузить цену, потом рассчитать
         updateLivePrice().then(() => {
-            // Небольшая задержка, чтобы currentCryptoPrice обновился
             setTimeout(() => {
                 calculateCryptoPosition();
             }, 200);
@@ -185,7 +202,7 @@ cryptoCalcBtn.addEventListener('click', () => {
     }
 });
 
-// Автоматический расчёт при изменении баланса или стоп-лосса (опционально)
+// Автоматический расчёт при изменении баланса, стоп-лосса или плеча
 cryptoBalanceInput.addEventListener('input', () => {
     if (currentCryptoPrice) calculateCryptoPosition();
 });
@@ -193,17 +210,21 @@ cryptoStopLossInput.addEventListener('input', () => {
     if (currentCryptoPrice) calculateCryptoPosition();
 });
 
-// При загрузке страницы: подгрузить дефолтную цену BTCUSDT
+// При загрузке страницы
 window.addEventListener('DOMContentLoaded', async () => {
-    // Установим значения по умолчанию для криптопанели (баланс 1000 уже в value)
+    // Устанавливаем начальное отображение плеча
+    updateLeverageDisplay();
+
+    // Загружаем цену BTCUSDT
     await updateLivePrice();
-    // Если есть стоп-лосс по умолчанию не ставим, чтобы пользователь ввёл сам.
-    // Для демонстрации можно предложить пример stop loss ниже цены на 2-3%
+
+    // Устанавливаем подсказку для стоп-лосса
     if (currentCryptoPrice && !cryptoStopLossInput.value) {
         const suggestedStop = (currentCryptoPrice * 0.97).toFixed(2);
-        cryptoStopLossInput.placeholder = `Напр. ${suggestedStop}`;
+        cryptoStopLossInput.placeholder = `Напр. ${suggestedStop} (на 3% ниже)`;
     }
-    // предзаполним forex поля для декора
+
+    // Заполняем forex поля для декора
     const forexBalance = document.getElementById('forexBalance');
     const forexEntry = document.getElementById('forexEntry');
     const forexStop = document.getElementById('forexStop');
@@ -216,7 +237,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (forexPriceStep) forexPriceStep.value = '1';
 });
 
-// Блокировка кнопки вычисления FOREX (пока в разработке)
+// Блокировка кнопки вычисления FOREX
 const forexCalcButton = document.getElementById('forexCalcBtn');
 if (forexCalcButton) {
     forexCalcButton.addEventListener('click', (e) => {
