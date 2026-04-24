@@ -5,6 +5,13 @@
     box-sizing: border-box;
 }
 
+/* ОТКЛЮЧАЕМ ЗУМ ПРИ ФОКУСЕ НА INPUT */
+input,
+textarea,
+select {
+    font-size: 16px !important;
+}
+
 html {
     font-size: 14px;
 }
@@ -15,6 +22,12 @@ body {
     color: #000000;
     padding: 0.8rem 1rem 12rem 1rem;
     min-height: 100vh;
+}
+
+/* ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА ОТ ЗУМА НА IOS */
+@viewport {
+    width: device-width;
+    zoom: 1;
 }
 
 .app-container {
@@ -115,7 +128,7 @@ input {
     border: 1px solid #cccccc;
     padding: 0.6rem 0.8rem;
     border-radius: 1rem;
-    font-size: 0.85rem;
+    font-size: 16px !important;  /* ФИКС: предотвращает зум на iOS */
     color: #000000;
     font-family: 'Inter', monospace;
     transition: 0.2s;
@@ -323,7 +336,7 @@ input:disabled {
     border: 1px solid #e0e0e0;
 }
 
-/* FOOTER - УВЕЛИЧЕН В 2 РАЗА */
+/* FOOTER */
 footer {
     text-align: center;
     position: fixed;
@@ -379,7 +392,6 @@ footer a:hover {
     .leverage-scale {
         font-size: 0.5rem;
     }
-    /* Футер на мобильных тоже увеличен */
     footer {
         padding: 1.5rem;
     }

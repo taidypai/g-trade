@@ -22,8 +22,7 @@ let currentLeverage = 1;
 // ---- ОБНОВЛЕНИЕ ОТОБРАЖЕНИЯ ПЛЕЧА ----
 function updateLeverageDisplay() {
     currentLeverage = parseInt(leverageSlider.value, 10);
-    leverageValueSpan.textContent = `${currentLeverage}x`;
-    // Если цена уже загружена, пересчитываем результат (опционально)
+    leverageValueSpan.textContent = currentLeverage + 'x';
     if (currentCryptoPrice !== null) {
         calculateCryptoPosition();
     }
@@ -74,21 +73,20 @@ async function fetchCryptoPrice(symbol) {
 async function updateLivePrice() {
     let rawSymbol = cryptoSymbolInput.value.trim();
     if (!rawSymbol) {
-        livePriceSpan.textContent = '❌ Введите пару';
+        livePriceSpan.textContent = 'Введите пару';
         currentCryptoPrice = null;
         return;
     }
-    livePriceSpan.textContent = '⏳ загрузка...';
+    livePriceSpan.textContent = 'Загрузка...';
     const result = await fetchCryptoPrice(rawSymbol);
     if (result && result.price) {
         currentCryptoPrice = result.price;
-        livePriceSpan.textContent = `$ ${currentCryptoPrice.toFixed(2)}`;
-        // Автоматически пересчитываем, если есть стоп-лосс
+        livePriceSpan.textContent = '$ ' + currentCryptoPrice.toFixed(2);
         if (cryptoStopLossInput.value && !isNaN(parseFloat(cryptoStopLossInput.value))) {
             calculateCryptoPosition();
         }
     } else {
-        livePriceSpan.textContent = '⚠️ Ошибка пары';
+        livePriceSpan.textContent = 'Ошибка пары';
         currentCryptoPrice = null;
     }
 }
@@ -107,20 +105,14 @@ cryptoSymbolInput.addEventListener('input', () => {
     }, 600);
 });
 
-// ---- ГЛАВНЫЙ РАСЧЁТ КРИПТЫ С УЧЁТОМ ПЛЕЧА ----
-// Формула с плечом:
-// Риск в деньгах = Balance × 0.01 (1% от депозита)
-// При использовании плеча, позиция увеличивается, но риск остаётся тем же.
-// Правильный расчёт: Quantity = (RiskAmount × Leverage) / |Entry - StopLoss|
-// Потому что каждый доллар собственных средств контролирует Leverage долларов позиции.
-// Потеря на 1 монету = |Entry - StopLoss|, но при плече фактический убыток умножается, но мы хотим чтобы убыток в деньгах = RiskAmount.
-// => Quantity × |Entry - StopLoss| / Leverage = RiskAmount
-// => Quantity = RiskAmount × Leverage / |Entry - StopLoss|
+// ---- ГЛАВНЫЙ РАСЧЁТ - ПОДДЕРЖИВАЕТ LONG И SHORT АВТОМАТИЧЕСКИ ----
+// Формула: Quantity = (Balance × 0.01 × Leverage) / |Entry - StopLoss|
+// Модуль разницы делает формулу универсальной для обоих направлений
 
 function calculateCryptoPosition() {
     // Проверяем, что есть текущая цена
     if (currentCryptoPrice === null || isNaN(currentCryptoPrice)) {
-        cryptoResultBox.textContent = '❌ Сначала обновите цену пары';
+        cryptoResultBox.textContent = 'Обновите цену пары';
         cryptoResultBox.classList.add('result-error');
         cryptoResultBox.classList.remove('result-success');
         return;
@@ -132,37 +124,31 @@ function calculateCryptoPosition() {
     const leverage = currentLeverage;
 
     if (isNaN(balance) || balance <= 0) {
-        cryptoResultBox.textContent = '❌ Укажите корректный баланс > 0';
+        cryptoResultBox.textContent = 'Корректный баланс > 0';
         cryptoResultBox.classList.add('result-error');
         cryptoResultBox.classList.remove('result-success');
         return;
     }
     if (isNaN(stopLoss) || stopLoss <= 0) {
-        cryptoResultBox.textContent = '❌ Введите цену стоп-лосса (число)';
+        cryptoResultBox.textContent = 'Введите цену стоп-лосса';
         cryptoResultBox.classList.add('result-error');
         cryptoResultBox.classList.remove('result-success');
         return;
     }
     if (stopLoss === entryPrice) {
-        cryptoResultBox.textContent = '❌ StopLoss не может равняться Entry';
+        cryptoResultBox.textContent = 'StopLoss не равен Entry';
         cryptoResultBox.classList.add('result-error');
         cryptoResultBox.classList.remove('result-success');
         return;
     }
 
-    // Для LONG позиции: риск на монету = (Entry - StopLoss)
-    let riskPerCoin = entryPrice - stopLoss;
-    if (riskPerCoin <= 0) {
-        cryptoResultBox.textContent = '⚠️ Стоп-лосс должен быть НИЖЕ цены входа (для LONG)';
-        cryptoResultBox.classList.add('result-error');
-        cryptoResultBox.classList.remove('result-success');
-        return;
-    }
+    // КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: используем МОДУЛЬ разницы
+    // Это позволяет работать и для LONG (stopLoss < entry) и для SHORT (stopLoss > entry)
+    const riskPerCoin = Math.abs(entryPrice - stopLoss);
 
     const riskAmount = balance * 0.01;   // 1% от депозита в USDT
 
-    // КЛЮЧЕВАЯ ФОРМУЛА С УЧЁТОМ ПЛЕЧА
-    // Quantity = (RiskAmount × Leverage) / riskPerCoin
+    // Quantity = (RiskAmount × Leverage) / |Entry - StopLoss|
     const quantity = (riskAmount * leverage) / riskPerCoin;
 
     if (quantity <= 0) {
@@ -172,21 +158,34 @@ function calculateCryptoPosition() {
         return;
     }
 
+    // Определяем направление для информативного сообщения
+    const direction = stopLoss < entryPrice ? 'LONG' : 'SHORT';
+
     // Форматируем вывод
-    const formattedQty = quantity.toFixed(8);
+    let formattedQty;
+    if (quantity < 0.000001) {
+        formattedQty = quantity.toFixed(10);
+    } else if (quantity < 0.001) {
+        formattedQty = quantity.toFixed(8);
+    } else if (quantity < 1) {
+        formattedQty = quantity.toFixed(6);
+    } else {
+        formattedQty = quantity.toFixed(4);
+    }
+
     const symbolDisplay = cryptoSymbolInput.value.trim().toUpperCase() || 'COIN';
     const displaySymbol = symbolDisplay.endsWith('USDT') ? symbolDisplay.replace('USDT', '') : symbolDisplay;
 
-    cryptoResultBox.innerHTML = `${formattedQty} <span style="font-size:0.9rem;">${displaySymbol}</span>`;
+    cryptoResultBox.innerHTML = formattedQty + ' <span style="font-size:0.9rem;">' + displaySymbol + '</span>';
     cryptoResultBox.classList.add('result-success');
     cryptoResultBox.classList.remove('result-error');
 
-    // Доп. информация
+    // Доп. информация в tooltip
     const positionValue = quantity * entryPrice;
     const marginUsed = positionValue / leverage;
     const riskUsd = riskPerCoin * quantity / leverage;
 
-    cryptoResultBox.title = `Размер позиции: $${positionValue.toFixed(2)} | Залог: $${marginUsed.toFixed(2)} | Риск: $${riskUsd.toFixed(2)} (1%) | Плечо: ${leverage}x`;
+    cryptoResultBox.title = direction + ' | Размер: $' + positionValue.toFixed(2) + ' | Залог: $' + marginUsed.toFixed(2) + ' | Риск: $' + riskUsd.toFixed(2) + ' (1%) | Плечо: ' + leverage + 'x';
 }
 
 // Обработчик кнопки расчёта крипты
@@ -212,16 +211,13 @@ cryptoStopLossInput.addEventListener('input', () => {
 
 // При загрузке страницы
 window.addEventListener('DOMContentLoaded', async () => {
-    // Устанавливаем начальное отображение плеча
     updateLeverageDisplay();
-
-    // Загружаем цену BTCUSDT
     await updateLivePrice();
 
-    // Устанавливаем подсказку для стоп-лосса
     if (currentCryptoPrice && !cryptoStopLossInput.value) {
-        const suggestedStop = (currentCryptoPrice * 0.97).toFixed(2);
-        cryptoStopLossInput.placeholder = `Напр. ${suggestedStop} (на 3% ниже)`;
+        const suggestedStopLong = (currentCryptoPrice * 0.97).toFixed(2);
+        const suggestedStopShort = (currentCryptoPrice * 1.03).toFixed(2);
+        cryptoStopLossInput.placeholder = 'LONG: ' + suggestedStopLong + ' | SHORT: ' + suggestedStopShort;
     }
 
     // Заполняем forex поля для декора
@@ -243,7 +239,7 @@ if (forexCalcButton) {
     forexCalcButton.addEventListener('click', (e) => {
         e.preventDefault();
         const forexResult = document.getElementById('forexResultBox');
-        if (forexResult) forexResult.textContent = '🚧 В разработке';
+        if (forexResult) forexResult.textContent = 'В разработке';
         setTimeout(() => {
             if (forexResult) forexResult.textContent = '—';
         }, 1200);
